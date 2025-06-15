@@ -23,6 +23,7 @@ from pathlib import Path
 from fastapi.middleware.gzip import GZipMiddleware
 import json
 import transformers
+from utils import should_retry_response, extract_json_from_response
 
 # 환경 변수 로드
 load_dotenv()
@@ -109,18 +110,77 @@ def format_prompt(input_text: str) -> str:
     system_prompt = load_system_prompt()
     return f"User: {system_prompt}\n\n{input_text}\n\nAssistant:"
 
-def validate_json_response(response_text: str) -> bool:
+def validate_json_response(response: str) -> bool:
     """JSON 응답의 유효성을 검증합니다."""
     try:
-        json.loads(response_text)
+        # JSON 파싱 전에 응답 정리
+        response = response.strip()
+        if not response.startswith('{') or not response.endswith('}'):
+            logger.warning("응답이 올바른 JSON 형식이 아님")
+            logger.warning(f"원본 응답: {response}")
+            return False
+
+        # 잘못된 형식 검사
+        if "_json_" in response or "__metadata" in response or "@odata" in response:
+            logger.warning("잘못된 JSON 형식 (메타데이터 포함)")
+            logger.warning(f"원본 응답: {response}")
+            return False
+
+        data = json.loads(response)
+        required_keys = ["question", "passage", "options", "answer", "explanation"]
+        
+        # 필수 키 확인
+        if not all(key in data for key in required_keys):
+            missing_keys = [key for key in required_keys if key not in data]
+            logger.warning(f"응답에 필수 키가 누락됨: {missing_keys}")
+            logger.warning(f"원본 응답: {response}")
+            return False
+
+        # 추가 필드 확인
+        extra_keys = [key for key in data.keys() if key not in required_keys]
+        if extra_keys:
+            logger.warning(f"불필요한 필드가 포함됨: {extra_keys}")
+            logger.warning(f"원본 응답: {response}")
+            return False
+            
+        # 빈칸 개수 확인
+        blanks = ["(A){{|bold-underline|}}", "(B){{|bold-underline|}}", "(C){{|bold-underline|}}"]
+        blank_count = sum(1 for blank in blanks if blank in data["passage"])
+        if blank_count != 3:  # 정확히 3개의 빈칸이 있어야 함
+            logger.warning(f"빈칸 개수가 정확하지 않음: {blank_count} (필요: 3)")
+            logger.warning(f"원본 응답: {response}")
+            return False
+            
+        # 옵션 형식 확인
+        options = data["options"].split("//")
+        if len(options) != 5:  # 정확히 5개의 옵션이 있어야 함
+            logger.warning(f"옵션 개수가 정확하지 않음: {len(options)} (필요: 5)")
+            logger.warning(f"원본 응답: {response}")
+            return False
+            
+        # 각 옵션의 형식 확인
+        for i, option in enumerate(options):
+            phrases = option.split(" - ")
+            if len(phrases) != 3:  # 각 옵션은 정확히 3개의 구문이 있어야 함
+                logger.warning(f"옵션 {i+1}의 구문 개수가 정확하지 않음: {len(phrases)} (필요: 3)")
+                logger.warning(f"원본 응답: {response}")
+                return False
+                
         return True
     except json.JSONDecodeError:
+        logger.warning("JSON 파싱 실패")
+        logger.warning(f"원본 응답: {response}")
+        return False
+    except Exception as e:
+        logger.warning(f"응답 검증 중 예외 발생: {str(e)}")
+        logger.warning(f"원본 응답: {response}")
         return False
 
 def generate_text(prompt: str, max_retries: int = 3) -> str:
     """텍스트를 생성하고 유효성을 검증합니다."""
     global model, tokenizer
     
+    # 모델과 토크나이저 상태 확인
     if model is None or tokenizer is None:
         logger.error("모델 또는 토크나이저가 초기화되지 않았습니다.")
         try:
@@ -129,6 +189,7 @@ def generate_text(prompt: str, max_retries: int = 3) -> str:
             if model is None or tokenizer is None:
                 raise Exception("모델 로드 실패")
             
+            # 토크나이저가 제대로 작동하는지 테스트
             test_text = "Hello, world!"
             test_tokens = tokenizer(test_text, return_tensors="pt")
             if test_tokens is None:
@@ -143,60 +204,51 @@ def generate_text(prompt: str, max_retries: int = 3) -> str:
     for attempt in range(max_retries):
         try:
             logger.info(f"생성 시도 {attempt + 1}/{max_retries}")
-            logger.info(f"프롬프트 길이: {len(prompt)}")
+            logger.info(f"프롬프트 길이  --: {len(prompt)}")
             
+            # 토크나이저가 제대로 작동하는지 한 번 더 확인
             if not callable(tokenizer):
                 raise Exception("토크나이저가 호출 가능한 객체가 아닙니다")
             
             inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=2048)
-            inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
+            inputs = {k: v.to(DEVICE) for k, v in inputs.items()}  # GPU로 입력 이동
             
             with torch.no_grad(), torch.amp.autocast(device_type='cuda', dtype=torch.float16):
                 outputs = model.generate(
                     **inputs,
                     max_new_tokens=1024,
-                    temperature=0.1,
-                    top_p=0.99,
-                    repetition_penalty=1.2,
+                    temperature=0.3,
+                    top_p=0.95,
+                    repetition_penalty=1.1,
                     do_sample=True,
                     pad_token_id=tokenizer.eos_token_id,
                     use_cache=True,
-                    num_beams=1,
+                    num_beams=5,
                     no_repeat_ngram_size=3
                 )
             
             response_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
             response_text = response_text[len(prompt):].strip()
             
-            if not response_text:
-                logger.warning(f"빈 응답 (시도 {attempt + 1}/{max_retries})")
+            # 응답 검증 및 재시도 결정
+            should_retry, error = should_retry_response(response_text, attempt, max_retries)
+            if should_retry:
+                logger.warning(error)
                 continue
                 
+            # 원본 응답 로깅
             logger.info(f"모델 원본 출력: {response_text}")
             
-            try:
-                first_json_start = response_text.find('{')
-                first_json_end = response_text.find('}', first_json_start) + 1
-                if first_json_start != -1 and first_json_end != -1:
-                    response_text = response_text[first_json_start:first_json_end]
-                    logger.info(f"추출된 JSON: {response_text}")
-                else:
-                    logger.warning("JSON 객체를 찾을 수 없음")
-                    logger.warning(f"전체 응답: {response_text}")
-                    continue
-            except Exception as e:
-                logger.warning(f"JSON 추출 중 오류: {str(e)}")
-                logger.warning(f"전체 응답: {response_text}")
+            # JSON 추출
+            json_text, error = extract_json_from_response(response_text)
+            if error:
+                logger.warning(error)
+                if attempt == max_retries - 1:
+                    return response_text
                 continue
                 
-            if validate_json_response(response_text):
-                logger.info("유효한 응답 생성 성공")
-                return response_text
-            else:
-                logger.warning(f"유효하지 않은 응답 (시도 {attempt + 1}/{max_retries})")
-                if attempt == max_retries - 1:
-                    logger.info("마지막 시도에서 유효하지 않은 응답 반환")
-                    return response_text
+            logger.info(f"추출된 JSON: {json_text}")
+            return json_text
                 
         except Exception as e:
             logger.error(f"생성 중 예외 발생 (시도 {attempt + 1}/{max_retries}): {str(e)}")
@@ -446,14 +498,28 @@ async def generate_mcq(request: Request) -> Dict:
         response = generate_text(prompt)
         logger.info(f"생성된 응답: {response}")
         
-        result = json.loads(response)
-        return result
+        # 응답이 올바른 MCQ 형식인지 검증
+        if validate_json_response(response):
+            try:
+                result = json.loads(response)
+                return {
+                    "type": "mcq",
+                    "data": result
+                }
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON 파싱 실패: {str(e)}")
+                raise HTTPException(status_code=500, detail="응답 형식이 올바르지 않습니다")
+        else:
+            # 일반 대화형 응답인 경우
+            return {
+                "type": "chat",
+                "data": {
+                    "message": response
+                }
+            }
         
     except HTTPException:
         raise
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON 파싱 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail="응답 형식이 올바르지 않습니다")
     except Exception as e:
         logger.error(f"MCQ 생성 중 예외 발생: {str(e)}")
         logger.exception("상세 오류 정보:")

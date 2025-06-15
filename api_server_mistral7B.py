@@ -23,6 +23,7 @@ from pathlib import Path
 from fastapi.middleware.gzip import GZipMiddleware
 import json
 import transformers
+from utils import should_retry_response, extract_json_from_response
 
 # 환경 변수 로드
 load_dotenv()
@@ -216,50 +217,38 @@ def generate_text(prompt: str, max_retries: int = 3) -> str:
                 outputs = model.generate(
                     **inputs,
                     max_new_tokens=1024,
-                    temperature=0.1,
-                    top_p=0.99,
-                    repetition_penalty=1.2,  # 반복 패널티 증가
+                    temperature=0.3,
+                    top_p=0.95,
+                    repetition_penalty=1.1,
                     do_sample=True,
                     pad_token_id=tokenizer.eos_token_id,
                     use_cache=True,
-                    num_beams=1,          # 빔 서치 비활성화
-                    no_repeat_ngram_size=3  # 3-gram 반복 방지
+                    num_beams=5,
+                    no_repeat_ngram_size=3
                 )
             
             response_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
             response_text = response_text[len(prompt):].strip()
-            
-            if not response_text:
-                logger.warning(f"빈 응답 (시도 {attempt + 1}/{max_retries})")
+            return response_text
+            # 응답 검증 및 재시도 결정
+            should_retry, error = should_retry_response(response_text, attempt, max_retries)
+            if should_retry:
+                logger.warning(error)
                 continue
                 
             # 원본 응답 로깅
             logger.info(f"모델 원본 출력: {response_text}")
             
-            # 첫 번째 JSON 객체만 추출
-            try:
-                first_json_start = response_text.find('{')
-                first_json_end = response_text.find('}', first_json_start) + 1
-                if first_json_start != -1 and first_json_end != -1:
-                    response_text = response_text[first_json_start:first_json_end]
-                    logger.info(f"추출된 JSON: {response_text}")
-                else:
-                    logger.warning("JSON 객체를 찾을 수 없음")
-                    logger.warning(f"전체 응답: {response_text}")
-                    continue
-            except Exception as e:
-                logger.warning(f"JSON 추출 중 오류: {str(e)}")
-                logger.warning(f"전체 응답: {response_text}")
+            # JSON 추출
+            json_text, error = extract_json_from_response(response_text)
+            if error:
+                logger.warning(error)
+                if attempt == max_retries - 1:
+                    return response_text
                 continue
                 
-            if validate_json_response(response_text):
-                logger.info("유효한 응답 생성 성공")
-                return response_text
-            else:
-                logger.warning(f"유효하지 않은 응답 (시도 {attempt + 1}/{max_retries})")
-                if attempt == max_retries - 1:
-                    logger.info("마지막 시도에서 유효하지 않은 응답 반환")
-                    return response_text
+            logger.info(f"추출된 JSON: {json_text}")
+            return json_text
                 
         except Exception as e:
             logger.error(f"생성 중 예외 발생 (시도 {attempt + 1}/{max_retries}): {str(e)}")
@@ -515,14 +504,28 @@ async def generate_mcq(request: Request) -> Dict:
         response = generate_text(prompt)
         logger.info(f"생성된 응답: {response}")
         
-        result = json.loads(response)
-        return result
+        # 응답이 올바른 MCQ 형식인지 검증
+        if validate_json_response(response):
+            try:
+                result = json.loads(response)
+                return {
+                    "type": "mcq",
+                    "data": result
+                }
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON 파싱 실패: {str(e)}")
+                raise HTTPException(status_code=500, detail="응답 형식이 올바르지 않습니다")
+        else:
+            # 일반 대화형 응답인 경우
+            return {
+                "type": "chat",
+                "data": {
+                    "message": response
+                }
+            }
         
     except HTTPException:
         raise
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON 파싱 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail="응답 형식이 올바르지 않습니다")
     except Exception as e:
         logger.error(f"MCQ 생성 중 예외 발생: {str(e)}")
         logger.exception("상세 오류 정보:")
