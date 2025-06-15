@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 import os
 
 def download_model():
-    """Mistral-7B-Instruct-v0.2 모델 다운로드"""
+    """Falcon-7B-Instruct 모델 다운로드"""
     print("📦 모델 다운로드를 시작합니다...")
 
     # .env 파일에서 환경변수 로딩
@@ -14,8 +14,8 @@ def download_model():
         print("❌ 환경 변수 'HUGGING_FACE_HUB_TOKEN'를 찾을 수 없습니다.")
         return None
 
-    repo_id = "mistralai/Mistral-7B-Instruct-v0.2"
-    local_dir = "/mnt/storage/models/mistral-7B-Instruct-v0.2"
+    repo_id = "tiiuae/falcon-7b-instruct"
+    local_dir = "/mnt/storage/models/falcon-7b-instruct"
 
     try:
         model_dir = snapshot_download(
