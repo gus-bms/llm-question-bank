@@ -45,8 +45,8 @@ IS_MAC = platform.system() == "Darwin"
 IS_APPLE_SILICON = IS_MAC and platform.machine() == "arm64"
 
 # 메모리 최적화 설정
-MAX_MEMORY = 18 * 1024 * 1024 * 1024  # 18GB VRAM (T4의 20GB 중 18GB 사용)
-TORCH_MEMORY_FRACTION = 0.95  # VRAM의 95% 사용
+MAX_MEMORY = 16 * 1024 * 1024 * 1024  # 18GB VRAM (T4의 20GB 중 18GB 사용)
+TORCH_MEMORY_FRACTION = 0.9  # VRAM의 95% 사용
 
 # GPU 설정
 USE_GPU = True
@@ -217,13 +217,13 @@ def generate_text(prompt: str, max_retries: int = 3) -> str:
                 outputs = model.generate(
                     **inputs,
                     max_new_tokens=1024,
-                    temperature=0.3,
+                    temperature=0.3,  # MCQ 생성에 적합한 값
                     top_p=0.95,
                     repetition_penalty=1.1,
                     do_sample=True,
                     pad_token_id=tokenizer.eos_token_id,
                     use_cache=True,
-                    num_beams=5,
+                    num_beams=1,  # beam search 제거로 속도 향상
                     no_repeat_ngram_size=3
                 )
             
@@ -342,6 +342,11 @@ def load_model():
                 # CUDA 그래프 최적화 활성화
                 torch.backends.cudnn.benchmark = True
                 torch.backends.cudnn.enabled = True
+                # 추가 CUDA 최적화
+                torch.backends.cuda.matmul.allow_tf32 = True  # TF32 활성화
+                torch.backends.cudnn.allow_tf32 = True  # cuDNN TF32 활성화
+                torch.backends.cudnn.deterministic = False  # 비결정적 연산 허용
+                torch.backends.cudnn.benchmark = True  # 벤치마크 모드 활성화
             
             # 토크나이저 로드
             logger.info(f"토크나이저 로드 시작 (경로: {MODEL_PATH})")
@@ -380,12 +385,8 @@ def load_model():
                     device_map="auto",
                     low_cpu_mem_usage=True,
                     max_memory={
-                        0: f"{int(MAX_MEMORY * TORCH_MEMORY_FRACTION / 1024**3)}GB",  # GPU 메모리
-                        "cpu": f"{int(MAX_MEMORY * 0.8 / 1024**3)}GB"  # CPU 메모리 (80% 사용)
+                        0: f"{int(MAX_MEMORY * TORCH_MEMORY_FRACTION / 1024**3)}GB"  # GPU 메모리만 설정
                     },
-                    offload_folder="offload",
-                    offload_state_dict=True,  # 상태 사전을 CPU로 오프로드
-                    offload_buffers=True,     # 버퍼를 CPU로 오프로드
                     trust_remote_code=True,   # 원격 코드 신뢰
                     use_cache=True,           # KV 캐시 사용
                     attn_implementation="eager"  # 안정적인 어텐션 구현 사용
