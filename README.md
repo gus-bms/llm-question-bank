@@ -1,189 +1,98 @@
-# Llama 모델 파인튜닝 프로젝트
+# HyperCLOVAX API Server (`api_server_hyper.py`)
 
-이 프로젝트는 Meta의 Llama 모델을 파인튜닝하고 API 서버로 제공하기 위한 코드를 포함하고 있습니다.
+이 서버는 HyperCLOVAX 모델을 활용하여 텍스트 생성 및 JSON 기반 문제 생성을 위한 API를 제공합니다.
 
-## 설치 및 설정 방법
+## 주요 기능
 
-### 1. Python 3.11 설치
+- HyperCLOVAX 모델 로드 및 GPU/CPU 자동 지원
+- `/generate` 엔드포인트를 통한 텍스트/문제 생성
+- 요청마다 커스텀 system prompt 지정 가능
+- JSON 응답 자동 추출 및 재시도 로직 내장
+- 로그 파일 자동 저장
 
-- [Python 3.11.0 다운로드 페이지](https://www.python.org/downloads/release/python-3110/)에서 Windows installer를 다운로드
-- 설치 시 "Add Python 3.11 to PATH" 옵션을 반드시 체크
-- 설치 완료 후 PowerShell 재시작
+## 환경 변수
 
-### 2. 가상환경 설정
+`.env` 파일 또는 시스템 환경 변수로 아래 값을 설정할 수 있습니다.
 
-```powershell
-# 가상환경 생성
-python -m venv .venv-py311
+| 변수명   | 설명        | 기본값  |
+| -------- | ----------- | ------- |
+| API_PORT | 서버 포트   | 8004    |
+| API_HOST | 서버 호스트 | 0.0.0.0 |
 
-# 가상환경 활성화 (Windows PowerShell)
-.\.venv-py311\Scripts\Activate.ps1
-```
-
-### 3. 필요한 패키지 설치
-
-```powershell
-# pip 업그레이드
-python -m pip install --upgrade pip
-
-# 패키지 설치
-pip install -r requirements.txt
-```
-
-### 4. 모델 다운로드
-
-```powershell
-# 모델 다운로드 스크립트 실행
-python download_model.py
-```
-
-### 5. 환경 변수 설정
-
-`.env` 파일을 프로젝트 루트 디렉토리에 생성하고 다음 내용을 추가:
-
-```env
-DEV_MODE=false
-API_PORT=8000
-API_HOST=0.0.0.0
-```
-
-### 6. 서버 실행
-
-```powershell
-# API 서버 실행
-python api_server.py
-```
-
-## 시스템 요구사항
-
-- Python 3.11
-- 최소 8GB RAM
-- Windows 10/11
-- 인터넷 연결 (모델 다운로드용)
-
-## 주의사항
-
-- 모델 파일 크기가 약 4GB이므로 충분한 디스크 공간 필요
-- CPU 모드로 실행되며, GPU는 현재 지원되지 않음
-- 서버 실행 시 기본적으로 8000번 포트 사용
-
-## 환경 설정
-
-1. 가상환경 생성 및 활성화:
-
-```bash
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-.\venv\Scripts\activate   # Windows
-```
-
-2. 필요한 패키지 설치:
+## 실행 방법
 
 ```bash
 pip install -r requirements.txt
+python api_server_hyper.py
 ```
 
-3. Hugging Face 토큰 설정:
+## 주요 엔드포인트
 
-- Hugging Face 계정 생성
-- https://huggingface.co/settings/tokens 에서 토큰 생성
-- `.env` 파일에 토큰 설정:
+### 1. 헬스 체크
 
-```bash
-HUGGING_FACE_HUB_TOKEN=your_token_here
-```
-
-4. Weights & Biases 설정:
-
-- https://wandb.ai 에서 계정 생성
-- 로그인:
-
-```bash
-wandb login
-```
-
-## 데이터셋 준비
-
-1. 데이터셋은 다음 형식을 따라야 합니다:
-
-```json
-{
-  "text": "학습할 텍스트 데이터"
-}
-```
-
-2. `finetune_llama.py` 파일에서 `DATASET_NAME` 변수를 실제 데이터셋 이름으로 변경하세요.
-
-## 파인튜닝 실행
-
-```bash
-python finetune_llama.py
-```
-
-## API 서버 실행
-
-1. 서버 시작:
-
-```bash
-python api_server.py
-```
-
-2. API 엔드포인트:
-
-- 텍스트 생성: `POST /generate`
+- **GET** `/health`
+- **응답 예시**:
   ```json
   {
-    "prompt": "생성할 텍스트의 프롬프트",
-    "max_length": 512,
-    "temperature": 0.7,
-    "top_p": 0.9,
-    "num_return_sequences": 1
+    "status": "healthy",
+    "model_loaded": true
   }
   ```
-- 서버 상태 확인: `GET /health`
 
-3. API 문서:
+### 2. 텍스트/문제 생성
 
-- Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
+- **POST** `/generate`
+- **요청 예시**:
 
-## 주요 설정 매개변수
+  ```json
+  {
+    "text": "다음 지문을 읽고 빈칸 추론 문제를 만들어줘...",
+    "system_prompt": "문제 생성에 대한 커스텀 시스템 프롬프트 (선택)"
+  }
+  ```
 
-### 파인튜닝 설정
+  - `system_prompt`는 생략 가능하며, 생략 시 서버의 기본 프롬프트(`system_prompt.txt`)가 사용됩니다.
 
-- `LORA_R`: LoRA 랭크 (기본값: 16)
-- `LORA_ALPHA`: LoRA 알파 값 (기본값: 32)
-- `LORA_DROPOUT`: LoRA 드롭아웃 비율 (기본값: 0.05)
-- `LEARNING_RATE`: 학습률 (기본값: 2e-4)
-- `BATCH_SIZE`: 배치 크기 (기본값: 4)
-- `NUM_EPOCHS`: 학습 에포크 수 (기본값: 3)
+- **응답 예시**:
+  ```json
+  {
+    "result": "{...}",
+    "tokens": 123,
+    "time_taken": 1.23
+  }
+  ```
 
-### API 서버 설정
+## 커스텀 System Prompt 사용법
 
-- `HOST`: 서버 호스트 (기본값: 0.0.0.0)
-- `PORT`: 서버 포트 (기본값: 8000)
-- `MAX_LENGTH`: 최대 생성 길이 (기본값: 512)
-- `TEMPERATURE`: 생성 다양성 (기본값: 0.7)
-- `TOP_P`: 누적 확률 임계값 (기본값: 0.9)
+- 요청의 JSON에 `"system_prompt"` 필드를 추가하면 해당 프롬프트가 우선 적용됩니다.
+- 예시:
+  ```json
+  {
+    "text": "문제를 만들어줘.",
+    "system_prompt": "너는 영어 문제 출제 전문가야. 반드시 JSON만 반환해."
+  }
+  ```
 
-## 주의사항
+## 모니터링 도구: `monitor.py`
 
-1. GPU 메모리 요구사항:
+`monitor.py`는 서버 및 모델의 상태, 리소스 사용량(CPU, 메모리 등)을 모니터링하거나, API 응답 상태를 주기적으로 체크하는 스크립트입니다.
 
-   - 최소 16GB VRAM 권장
-   - 8비트 양자화를 사용하여 메모리 사용량 최적화
+### 주요 기능
 
-2. 데이터셋 크기:
+- `/health` 엔드포인트를 주기적으로 호출하여 서버 및 모델 상태 확인
+- 시스템의 CPU, 메모리 사용률 모니터링 및 로그 저장
+- 장애 발생 시 로그 기록
 
-   - 학습 데이터는 충분히 큰 크기여야 함 (최소 수천 개의 샘플)
-   - 검증 데이터셋도 포함되어야 함
+### 실행 방법
 
-3. 모델 접근:
+```bash
+python monitor.py
+```
 
-   - Meta Llama 모델 사용을 위해서는 Meta의 승인이 필요합니다
-   - https://ai.meta.com/llama/ 에서 접근 권한을 요청하세요
+### 로그
 
-4. API 서버 보안:
-   - 실제 운영 환경에서는 CORS 설정을 적절히 조정하세요
-   - API 인증 메커니즘을 추가하는 것을 고려하세요
-   - HTTPS를 사용하여 통신을 암호화하세요
+- `logs/monitor.log` 파일에 API 상태 및 시스템 리소스 사용량이 기록됩니다.
+
+---
+
+이 문서는 실제 `api_server_hyper.py`의 기능과 구조에 맞춰 작성되었습니다. 추가로 궁금한 점이 있으면 문의해 주세요.
